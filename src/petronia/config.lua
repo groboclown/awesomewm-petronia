@@ -9,6 +9,9 @@
 local ipairs = ipairs
 local pairs = pairs
 
+DIRECTION_VERTICAL = "vertical"
+DIRECTION_HORIZONTAL = "horizontal"
+
 
 -- "setup" - how the screens and tags are split up.
 _setup = {
@@ -16,6 +19,27 @@ _setup = {
   roots = {}
   client_tile_assignment = {}
 }
+
+function _get_position_for_client(client)
+  local best_match_factor = 0
+  local best_match_root = nil
+  for i,v in pairs(_setup.roots) do
+    local factor = v:_match_factor(client)
+	if best_match_root == nil or factor > best_match_factor then
+	  best_match_root = v
+	  best_match_factor = factor
+	end
+  end
+  if best_match_root == nil then
+	error("no root window registered")
+  end
+  local tile_index = client_tile_assignment[ _mk_client_id(client) ] or 0
+  return best_match_root:_tile_position(client, tile_index)
+end
+
+function _mk_client_id(client)
+  return "" .. client.pid .. ":" .. client.instance
+end
 
 local Panel = {}
 function Panel:new(o, parent)
@@ -29,6 +53,7 @@ function Panel:new(o, parent)
   o._parent = parent or nil
   o._children = {}
   o._index = -1
+  o._snap = "nw"
 
   return o
 end
@@ -111,6 +136,9 @@ function Panel:as_container(split_direction)
   if self._type ~= nil then
 	error("already set type")
   end
+  if split_direction ~= DIRECTION_VERTICAL and split_direction ~= DIRECTION_HORIZONTAL then
+	error("split_direction can only be `" .. DIRECTION_VERTICAL .. "` or `" .. DIRECTION_HORIZONTAL .. "`")
+  end
   self._type = "container"
   self._direction = split_direction
   return self
@@ -146,8 +174,70 @@ function Panel:_has_tile_index(index)
 end
 
 
-function Panel:_position(tile_index, parent_x, parent_y, parent_w, parent_h)
+-- @param panel_? - coordinates of this panel, as calculated by
+--   the parent panel.
+-- return a table with { x, y, width, height, snap }
+-- `snap` is one of "ne", "nw", "se", "sw"
+function Panel:_position(args)
+  local tile_index = args.tile_index
+  local panel_x = args.panel_x
+  local panel_y = args.panel_y
+  local panel_w = args.panel_w
+  local panel_h = args.panel_h
 
+  if self._index == tile_index then
+	return { x=panel_x, y=panel_y, width=panel_w, height=panel_h, snap=self._snap }
+  end
+  -- figure out the total size factors of the children
+  local size_total = 0
+  for i,v in ipairs(self._children) do
+	if v._index == tile_index and v._size_factor == 0 then
+	  -- full split
+      return { x=panel_x, y=panel_y, width=panel_w, height=panel_h, snap=self._snap }
+	end
+    size_total = size_total + v._size_factor
+  end
+  local const_pos_index = "panel_x"
+  local const_pos = panel_x
+  local split_pos_index = "panel_y"
+  local split_start_pos = panel_y
+  local split_pos = panel_y
+  local const_size_index = "panel_w"
+  local const_size = panel_w
+  local split_size_index = "panel_h"
+  local total_split_size = panel_h
+  if self._direction == DIRECTION_HORIZONTAL then
+	const_pos_index = "panel_y"
+	const_pos = panel_y
+	split_pos_index = "panel_x"
+	split_start_pos = panel_x
+	split_pos = panel_x
+	const_size_index = "panel_h"
+	const_size = panel_h
+	split_size_index = "panel_w"
+	total_split_size = panel_w
+  end
+  local ret = {}
+  ret[const_pos_index] = const_pos
+  ret[const_size_index] = const_size
+  local split_inc_pos = 0
+  for i,v in ipairs(self._children) do
+	local split_size = ((total_pos * v._size_factor) / size_total)
+    local split_endpos = split_inc_pos + ((total_pos * v._size_factor) / size_total)
+
+	-- avoid rounding errors
+	if i == #self._children then
+	  split_size = total_split_size - split_inc_pos
+	end
+
+	-- don't need to worry about `0` size factor here.
+	if v:_has_tile_window(tile_index) then
+	  ret[split_pos_index] = split_start_pos + split_inc_pos
+	  ret[split_size_index] = split_size
+	  return v:_position(ret)
+	end
+  end
+  error("No tile index contained in this panel")
 end
 
 
@@ -190,6 +280,14 @@ function RootPanel:_match_factor(client)
 end
 
 
-function RootPanel:_tile_position(tile_index)
+function RootPanel:_tile_position(client, tile_index)
+  local g = client.screen.workarea
 
+  return self:_position{
+	tile_index = tile_index;
+	panel_x = g.x;
+	panel_y = g.y;
+	panel_w = g.width;
+	panel_h = g.height;
+  }
 end
